@@ -1,13 +1,17 @@
+import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
-import os
+from flask import Flask, jsonify, send_file
+
+app = Flask(__name__)
+
+OUTPUT_FOLDER = "output"
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 
 def generate_data():
-    """Generate 30 days of synthetic bus trip data."""
-    
     np.random.seed(42)
     routes = ['R1', 'R2', 'R3']
     stops = ['Stop_A', 'Stop_B', 'Stop_C', 'Stop_D']
@@ -25,7 +29,6 @@ def generate_data():
                 for i, stop in enumerate(stops):
                     scheduled = date.replace(hour=hour, minute=i * 10, second=0)
 
-                    # Peak hours have more delay
                     if hour in [8, 9, 17]:
                         delay = np.random.normal(5, 2)
                     else:
@@ -41,43 +44,27 @@ def generate_data():
                     })
 
     df = pd.DataFrame(data)
+    df['delay'] = (df['actual'] - df['scheduled']).dt.total_seconds() / 60
+    df['hour'] = df['actual'].dt.hour
+
     return df
 
 
 def analyze_data(df):
-    """Perform delay analysis."""
-    
-    df['delay'] = (df['actual'] - df['scheduled']).dt.total_seconds() / 60
-    df['hour'] = df['actual'].dt.hour
+    summary = {
+        "total_records": len(df),
+        "average_delay": round(df['delay'].mean(), 2),
+        "max_delay": round(df['delay'].max(), 2),
+        "on_time_percentage": round((df['delay'].abs() <= 2).mean() * 100, 1),
+        "worst_routes": df.groupby('route')['delay'].mean().sort_values(ascending=False).to_dict(),
+        "worst_stops": df.groupby('stop')['delay'].mean().sort_values(ascending=False).to_dict(),
+        "worst_hours": df.groupby('hour')['delay'].mean().sort_values(ascending=False).head(3).to_dict()
+    }
 
-    print("\n" + "=" * 50)
-    print("BUS DELAY ANALYSIS")
-    print("=" * 50)
-
-    print(f"\nTotal Records: {len(df):,}")
-    print(f"Average Delay: {df['delay'].mean():.2f} minutes")
-    print(f"Max Delay: {df['delay'].max():.2f} minutes")
-
-    on_time = (df['delay'].abs() <= 2).mean() * 100
-    print(f"On-Time Percentage: {on_time:.1f}%")
-
-    print("\nWorst Routes:")
-    print(df.groupby('route')['delay'].mean().sort_values(ascending=False))
-
-    print("\nWorst Stops:")
-    print(df.groupby('stop')['delay'].mean().sort_values(ascending=False))
-
-    print("\nWorst Hours:")
-    print(df.groupby('hour')['delay'].mean().sort_values(ascending=False).head(3))
-
-    return df
+    return summary
 
 
-def visualize_data(df):
-    """Create and save visualization charts."""
-    
-    os.makedirs("output", exist_ok=True)
-
+def create_visualization(df):
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 
     axes[0, 0].hist(df['delay'], bins=30)
@@ -96,26 +83,35 @@ def visualize_data(df):
     axes[1, 1].set_title('Average Delay by Stop')
 
     plt.tight_layout()
-    plt.savefig("output/bus_analysis.png", dpi=150)
+    filepath = os.path.join(OUTPUT_FOLDER, "bus_analysis.png")
+    plt.savefig(filepath, dpi=150)
     plt.close()
 
-    print("\nCharts saved inside 'output' folder.")
+    return filepath
 
 
-def save_data(df):
-    """Save dataset to CSV file."""
-    df.to_csv("output/bus_data.csv", index=False)
-    print("Data saved as CSV.")
+@app.route("/")
+def home():
+    return "Bus Delay Analysis API is Running 🚍"
 
 
-def main():
+@app.route("/analyze")
+def run_analysis():
     df = generate_data()
-    df = analyze_data(df)
-    visualize_data(df)
-    save_data(df)
+    summary = analyze_data(df)
 
-    print("\nProject Completed Successfully!")
+    df.to_csv(os.path.join(OUTPUT_FOLDER, "bus_data.csv"), index=False)
+    create_visualization(df)
+
+    return jsonify(summary)
 
 
+@app.route("/chart")
+def get_chart():
+    filepath = os.path.join(OUTPUT_FOLDER, "bus_analysis.png")
+    return send_file(filepath, mimetype='image/png')
+
+
+# IMPORTANT FOR GUNICORN
 if __name__ == "__main__":
-    main()
+    app.run(debug=True)
